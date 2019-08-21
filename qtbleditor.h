@@ -33,6 +33,7 @@ private slots:
     void open();
     void openRecentFile();
     void reopen();
+    void sendToServer();
     bool closeTable(bool hideTable = true);
     bool closeAll(bool hideTable = true) { return closeTable(hideTable) && (!_openedTables || closeTable(hideTable)); }
     void save();
@@ -53,6 +54,7 @@ private slots:
 
     void updateToolbarStateInMenu() { ui.actionToolbar->setChecked(ui.mainToolBar->isVisible()); }
     void toggleRowsHeight(bool isSmall);
+	void changeKeyColumnVisibility(bool hide);
 
     void supplement();
     void swapTables();
@@ -66,6 +68,7 @@ private slots:
     void updateWindow(bool isModified = true);
     void updateItem(QTableWidgetItem *item);
     void refreshDifferences(TablesDifferencesWidget *w);
+    void modifyText(bool fromLeftToRight, bool append);
 
 private:
     Ui::QTblEditorClass ui;
@@ -112,6 +115,9 @@ private:
     void closeAllDialogs() { foreach (QDialog *d, findChildren<QDialog *>()) d->close(); }
     void increaseRowCount(int rowIndex);
     QStringList differentStrings(TablesDifferencesWidget::DiffType diffType) const;
+
+    QString foldNewlines(const QString &s);
+    QString restoreNewlines(const QString &s);
 };
 
 #endif // QTBLEDITOR_H

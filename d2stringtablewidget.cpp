@@ -81,13 +81,20 @@ void D2StringTableWidget::deleteItems(bool isClear)
                 progress.setValue((i + 1) * k);
                 if (progress.wasCanceled())
                     return;
-                removeRow(range.topRow() - rowShift);
+
+                int row = range.topRow() - rowShift;
+                removeRow(row);
+                _editedItems.remove(qMakePair<int, int>(row, 0));
+                _editedItems.remove(qMakePair<int, int>(row, 1));
             }
             rowShift += range.rowCount();
             emit currentCellChanged(currentRow(), 0, 0, 0);
         }
     }
     progress.setValue(elementsToDelete);
+
+    if (!isClear)
+        changeRowHeaderDisplay();
 }
 
 void D2StringTableWidget::createRowAt(int row)
@@ -101,8 +108,8 @@ void D2StringTableWidget::createRowAt(int row)
 
 void D2StringTableWidget::createNewEntry(int row, const QString &key, const QString &val)
 {
-    setItem(row, 0, new QTableWidgetItem(key.isEmpty() || key == "\"" ? QString() : key.split('\"', QString::SkipEmptyParts).at(0)));
-    setItem(row, 1, new QTableWidgetItem(val.isEmpty() || val == "\"" ? QString() : val.split('\"', QString::SkipEmptyParts).at(0)));
+    setItem(row, 0, new QTableWidgetItem(key.isEmpty() || key == "\"" ? QString() : key));
+    setItem(row, 1, new QTableWidgetItem(val.isEmpty() || val == "\"" ? QString() : val));
 }
 
 void D2StringTableWidget::mousePressEvent(QMouseEvent *mouseEvent)
@@ -138,6 +145,7 @@ void D2StringTableWidget::dropEvent(QDropEvent *event)
             QTableWidgetItem *anItem = item(firstDroppedItem->row() + i, firstDroppedItem->column() + j);
             droppedItems += anItem;
             oldTexts += anItem->text();
+            addEditedItem(anItem);
         }
     }
 

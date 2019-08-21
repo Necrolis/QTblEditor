@@ -22,6 +22,8 @@
 #include <QMimeData>
 #include <QDateTime>
 
+#include <QNetworkReply>
+
 #ifndef QT_NO_DEBUG
 #include <QDebug>
 #endif
@@ -46,6 +48,11 @@ QDataStream &operator <<(QDataStream &out, const TblHashNode &tn)
     return out << tn.Active << tn.Index << tn.HashValue << tn.StringKeyOffset << tn.StringValOffset << tn.StringValLength;
 }
 
+QString stripSurroundingQuotes(const QString &s)
+{
+    return s.startsWith('\"') && s.endsWith('\"') ? s.mid(1, s.length() - 2) : s;
+}
+
 // end of global auxiliary functions
 
 
@@ -63,6 +70,9 @@ QTblEditor::QTblEditor(QWidget *parent, Qt::WindowFlags flags) : QMainWindow(par
 #ifdef Q_OS_MAC
     ui.actionInsertAfterCurrent->setShortcut(QKeySequence("+"));
     ui.actionAppendEntry->setShortcut(QKeySequence("Ctrl++"));
+    ui.actionGoTo->setShortcut(QKeySequence("Ctrl+L"));
+#else
+    ui.actionGoTo->setShortcut(QKeySequence("Ctrl+G"));
 #endif
     ui.actionSwap->setShortcut(QKeySequence("Meta+Tab"));
     ui.actionChangeActive->setShortcut(QKeySequence("Tab"));
@@ -148,6 +158,7 @@ void QTblEditor::connectActions()
     CONNECT_ACTION_TO_SLOT(ui.actionNew, SLOT(newTable()));
     CONNECT_ACTION_TO_SLOT(ui.actionOpen, SLOT(open()));
     CONNECT_ACTION_TO_SLOT(ui.actionReopen, SLOT(reopen()));
+    CONNECT_ACTION_TO_SLOT(ui.actionSendToServer, SLOT(sendToServer()));
     CONNECT_ACTION_TO_SLOT(ui.actionSave, SLOT(save()));
     CONNECT_ACTION_TO_SLOT(ui.actionSaveAs, SLOT(saveAs()));
     CONNECT_ACTION_TO_SLOT(ui.actionSaveAll, SLOT(saveAll()));
@@ -166,6 +177,7 @@ void QTblEditor::connectActions()
 
     connect(ui.actionToolbar, SIGNAL(toggled(bool)), ui.mainToolBar, SLOT(setVisible(bool)));
     connect(ui.actionSmallRows, SIGNAL(toggled(bool)), SLOT(toggleRowsHeight(bool)));
+	connect(ui.actionHideKeyColumn, SIGNAL(toggled(bool)), SLOT(changeKeyColumnVisibility(bool)));
 
     CONNECT_ACTION_TO_SLOT(ui.actionSupplement, SLOT(supplement()));
     CONNECT_ACTION_TO_SLOT(ui.actionSwap, SLOT(swapTables()));
@@ -318,6 +330,41 @@ void QTblEditor::reopen()
         setWindowModified(_leftTableWidget->isWindowModified() && _rightTableWidget->isWindowModified());
         updateLocationLabel(_currentTableWidget->currentRow());
     }
+}
+
+void QTblEditor::sendToServer()
+{
+    QSettings settings;
+    QString url = settings.value("serverUrl").toString();
+    if (url.isEmpty())
+    {
+        url = QInputDialog::getText(this, tr("Server URL"), QString());
+        if (url.isEmpty())
+            return;
+        settings.setValue("serverUrl", url);
+    }
+
+    // force wrapping in quotes
+    bool wrapCurrent = ui.actionWrapStrings->isChecked();
+    ui.actionWrapStrings->setChecked(true);
+    QByteArray data;
+    writeAsText(data, false);
+    ui.actionWrapStrings->setChecked(wrapCurrent);
+
+    QNetworkRequest request(QUrl(url + "?name=" + QFileInfo(currentTablePanelWidget()->absoluteFileName()).baseName()));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
+
+    QNetworkAccessManager qnam;
+    QNetworkReply *reply = qnam.post(request, data);
+    QEventLoop eventLoop;
+    connect(reply, SIGNAL(finished()), &eventLoop, SLOT(quit()));
+    eventLoop.exec();
+
+    if (reply->error())
+        QMessageBox::critical(this, tr("Error"), reply->errorString());
+    else
+        QMessageBox::information(this, tr("Success"), tr("Response:") + "\n" + reply->readAll());
+    reply->deleteLater();
 }
 
 bool QTblEditor::loadFile(const QString &fileName, bool shouldShowOpenOptions)
@@ -509,6 +556,10 @@ bool QTblEditor::processTxtOrCsvFile(QFile *inputFile)
     for (; i < rows; currentLine = entries.at(++i))
     {
         currentLine = currentLine.trimmed();
+        if (wrappingCharKey)
+            currentLine = currentLine.mid(1); // remove leading wrappingCharKeyString
+        if (wrappingCharValue)
+            currentLine.chop(1); // remove trailing wrappingCharValueString
 
         int separatorIndex = currentLine.indexOf(keyValueSeparator);
         if (separatorIndex == -1)
@@ -518,8 +569,8 @@ bool QTblEditor::processTxtOrCsvFile(QFile *inputFile)
             return false;
         }
 
-        QString key = TblStructure::decodeKey(currentLine.left(separatorIndex));
-        _currentTableWidget->createNewEntry(i, key, QString::fromUtf8(currentLine.mid(separatorIndex + keyValueSeparator.length()).replace("\\n", "\n")));
+        QString key = restoreNewlines(TblStructure::decodeKey(currentLine.left(separatorIndex)));
+        _currentTableWidget->createNewEntry(i, key, restoreNewlines(QString::fromUtf8(currentLine.mid(separatorIndex + keyValueSeparator.length()))));
 
         int currentKeyWidth = QFontMetrics(_currentTableWidget->item(i, 0)->font()).width(key);
         if (maxKeyWidth < currentKeyWidth)
@@ -574,7 +625,7 @@ bool QTblEditor::closeTable(bool hideTable)
 
 void QTblEditor::enableTableActions(bool state)
 {
-    QList<QAction *> actions = QList<QAction *>() << ui.actionSaveAs << ui.actionClose << ui.actionCloseAll << ui.menuEdit->actions();
+    QList<QAction *> actions = QList<QAction *>() << ui.actionSaveAs << ui.actionClose << ui.actionCloseAll << ui.menuEdit->actions() << ui.actionSendToServer;
     foreach (QAction *action, actions)
         action->setEnabled(state);
     ui.menuEdit->setEnabled(state);
@@ -660,13 +711,17 @@ void QTblEditor::saveAll()
 bool QTblEditor::saveFile(const QString &fileName)
 {
     QByteArray bytesToWrite; // first of all, write everything to buffer
-    QString extension = fileName.right(4);
-    bool isCsv = extension == ".csv";
+	QFileInfo fi(fileName);
+    QString extension = fi.suffix().toLower();
+    bool isCsv = extension == "csv", savedAsTbl = false;
 
     DWORD fileSize;
-    if (extension == ".tbl")
-        fileSize = writeAsTbl(bytesToWrite);
-    else if (extension == ".txt" || isCsv)
+	if (extension == "tbl")
+	{
+		fileSize = writeAsTbl(bytesToWrite);
+		savedAsTbl = true;
+	}
+    else if (extension == "txt" || isCsv)
         fileSize = writeAsText(bytesToWrite, isCsv);
     else // any file
     {
@@ -682,6 +737,7 @@ bool QTblEditor::saveFile(const QString &fileName)
         {
         case 0: // tbl
             fileSize = writeAsTbl(bytesToWrite);
+			savedAsTbl = true;
             break;
         case 1: // txt
             fileSize = writeAsText(bytesToWrite, false);
@@ -704,6 +760,9 @@ bool QTblEditor::saveFile(const QString &fileName)
 
             updateWindow(false);
             ui.statusBar->showMessage(tr("File \"%1\" successfully saved").arg(QDir::toNativeSeparators(fileName)), 3000);
+
+			if (savedAsTbl && ui.actionSaveTxtWithTbl->isChecked())
+				saveFile(QFileInfo(QDir(fi.absolutePath()), fi.completeBaseName() + ".txt").filePath());
 
             return true;
         }
@@ -802,7 +861,7 @@ DWORD QTblEditor::writeAsText(QByteArray &bytesToWrite, bool isCsv)
     QDataStream out(&bytesToWrite, QIODevice::WriteOnly);
     for (WORD i = 0, n = _currentTableWidget->rowCount(); i < n; ++i)
     {
-        QByteArray keyLatin1 = TblStructure::encodeKey(_currentTableWidget->item(i, 0)->text());
+        QByteArray keyLatin1 = TblStructure::encodeKey(foldNewlines(_currentTableWidget->item(i, 0)->text()));
         if (wrappingChar)
             out << wrappingChar;
         out.writeRawData(keyLatin1.constData(), keyLatin1.size());
@@ -811,7 +870,7 @@ DWORD QTblEditor::writeAsText(QByteArray &bytesToWrite, bool isCsv)
 
         out << separator;
 
-        QByteArray valUtf8 = _currentTableWidget->item(i, 1)->text().replace('\n', "\\n").toUtf8();
+        QByteArray valUtf8 = foldNewlines(_currentTableWidget->item(i, 1)->text()).toUtf8();
         if (wrappingChar)
             out << wrappingChar;
         if (!valUtf8.isEmpty())
@@ -987,6 +1046,7 @@ void QTblEditor::writeSettings()
     settings.setValue("wrapTxtStrings", ui.actionWrapStrings->isChecked());
     settings.setValue("showHexInRows", ui.actionShowHexInRow->isChecked());
     settings.setValue("startNumberingFrom", _startNumberingGroup->checkedAction()->text());
+	settings.setValue("saveTxtWithTbl", ui.actionSaveTxtWithTbl->isChecked());
     settings.endGroup();
 
     settings.beginGroup("recentItems");
@@ -1053,6 +1113,7 @@ void QTblEditor::readSettings()
     ui.actionWrapStrings->setChecked(settings.value("wrapTxtStrings", true).toBool());
     ui.actionShowHexInRow->setChecked(settings.value("showHexInRows").toBool());
     (settings.value("startNumberingFrom").toString() == "0" ? ui.actionStartNumberingFrom0 : ui.actionStartNumberingFrom1)->setChecked(true);
+	ui.actionSaveTxtWithTbl->setChecked(settings.value("saveTxtWithTbl").toBool());
     settings.endGroup();
 
     settings.beginGroup("recentItems");
@@ -1123,7 +1184,7 @@ void QTblEditor::aboutApp()
     aboutBox.setText(QString("<b>%1</b><br />").arg(appFullName)
                      + tr("Compiled on: %1").arg(QLocale(QLocale::C).toDateTime(QString(__TIMESTAMP__).simplified(), "ddd MMM d hh:mm:ss yyyy").toString("dd.MM.yyyy hh:mm:ss")));
     aboutBox.setInformativeText(tr("<i>Author:</i> Filipenkov Andrey (<b>kambala</b>)")
-                                + QString("<br /><i>ICQ:</i> 287764961<br /><i>E-mail:</i> <a href=\"mailto:%2?subject=%3\">%2</a>").arg(email, appFullName));
+                                + QString("<br /><i>Telegram:</i> <a href=\"https://telegram.me/kambala_decapitator\">@kambala_decapitator</a><br /><i>E-mail:</i> <a href=\"mailto:%2?subject=%3\">%2</a>").arg(email, appFullName));
     aboutBox.exec();
 }
 
@@ -1211,10 +1272,12 @@ void QTblEditor::copy()
     {
         for (int j = range.topRow(); j <= range.bottomRow(); j++)
         {
+            QString s;
             if (range.columnCount() == 1)
-                selectedLines += QString("\"%1\"").arg(_currentTableWidget->item(j, range.rightColumn())->text());
+                s = QString("\"%1\"").arg(_currentTableWidget->item(j, range.rightColumn())->text());
             else
-                selectedLines += QString("\"%1\"\t\"%2\"").arg(_currentTableWidget->item(j, 0)->text(), _currentTableWidget->item(j, 1)->text());
+                s = QString("\"%1\"\t\"%2\"").arg(_currentTableWidget->item(j, 0)->text(), _currentTableWidget->item(j, 1)->text());
+            selectedLines += foldNewlines(s);
         }
     }
 
@@ -1237,7 +1300,7 @@ void QTblEditor::paste()
                 int rowIndex = row + i;
                 _currentTableWidget->createRowAt(rowIndex);
                 QStringList keyValueString = records.at(i).split('\t');
-                _currentTableWidget->createNewEntry(rowIndex, keyValueString.at(0), keyValueString.at(1));
+                _currentTableWidget->createNewEntry(rowIndex, stripSurroundingQuotes(keyValueString.at(0)), stripSurroundingQuotes(restoreNewlines(keyValueString.at(1))));
             }
         }
         else // format: "text"
@@ -1247,10 +1310,12 @@ void QTblEditor::paste()
             {
                 int rowIndex = row + i;
                 _currentTableWidget->createRowAt(rowIndex);
+
+                QString s = stripSurroundingQuotes(restoreNewlines(records.at(i)));
                 if (isKey)
-                    _currentTableWidget->createNewEntry(rowIndex, records.at(i), QString());
+                    _currentTableWidget->createNewEntry(rowIndex, s, QString());
                 else
-                    _currentTableWidget->createNewEntry(rowIndex, QString(), records.at(i));
+                    _currentTableWidget->createNewEntry(rowIndex, QString(), s);
             }
         }
 
@@ -1275,6 +1340,12 @@ void QTblEditor::toggleRowsHeight(bool isSmall)
         _rightTableWidget->setRowHeight(i, height);
 }
 
+void QTblEditor::changeKeyColumnVisibility(bool hide)
+{
+	_leftTableWidget->setColumnHidden(0, hide);
+	_rightTableWidget->setColumnHidden(0, hide);
+}
+
 QStringList QTblEditor::differentStrings(TablesDifferencesWidget::DiffType diffType) const
 {
     int minRows = qMin(_leftTableWidget->rowCount(), _rightTableWidget->rowCount());
@@ -1293,6 +1364,16 @@ QStringList QTblEditor::differentStrings(TablesDifferencesWidget::DiffType diffT
         }
     }
     return differenceRows;
+}
+
+QString QTblEditor::foldNewlines(const QString &s)
+{
+    return QString(s).replace(QLatin1String("\n"), QLatin1String("\\n"));
+}
+
+QString QTblEditor::restoreNewlines(const QString &s)
+{
+    return QString(s).replace(QLatin1String("\\n"), QLatin1String("\n"));
 }
 
 void QTblEditor::showDifferences()
@@ -1318,7 +1399,10 @@ void QTblEditor::showDifferences()
         {
             diffWidget = new TablesDifferencesWidget(this, diffType);
             connect(diffWidget->listWidget(), SIGNAL(currentTextChanged(const QString &)), _leftTableWidget, SLOT(tableDifferencesItemChanged(const QString &)));
+            if (!ui.actionSyncScrolling->isChecked())
+                connect(diffWidget->listWidget(), SIGNAL(currentTextChanged(const QString &)), _rightTableWidget, SLOT(tableDifferencesItemChanged(const QString &)));
             connect(diffWidget, SIGNAL(refreshRequested(TablesDifferencesWidget *)), SLOT(refreshDifferences(TablesDifferencesWidget *)));
+            connect(diffWidget, SIGNAL(modifyTextRequested(bool,bool)), SLOT(modifyText(bool,bool)));
         }
         diffWidget->addRows(differenceRows);
         diffWidget->resize(diffWidget->sizeHint());
@@ -1332,6 +1416,16 @@ void QTblEditor::refreshDifferences(TablesDifferencesWidget *w)
 {
     w->clear();
     w->addRows(differentStrings(w->diffType()));
+}
+
+void QTblEditor::modifyText(bool fromLeftToRight, bool append)
+{
+    QTableWidget *acceptor = fromLeftToRight ? _rightTableWidget : _leftTableWidget, *donor = inactiveTableWidget(acceptor);
+    QTableWidgetItem *acceptorItem = acceptor->item(acceptor->currentRow(), 1);
+    QString prefix;
+    if (append)
+        prefix = acceptorItem->text();
+    acceptorItem->setText(prefix + donor->item(donor->currentRow(), 1)->text());
 }
 
 void QTblEditor::syncScrollingChanged(bool isSyncing)

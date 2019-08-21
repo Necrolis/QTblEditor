@@ -30,7 +30,7 @@
      <x>0</x>
      <y>0</y>
      <width>714</width>
-     <height>21</height>
+     <height>22</height>
     </rect>
    </property>
    <widget class="QMenu" name="menuFile">
@@ -50,6 +50,8 @@
     <addaction name="actionSave"/>
     <addaction name="actionSaveAs"/>
     <addaction name="actionSaveAll"/>
+    <addaction name="separator"/>
+    <addaction name="actionSendToServer"/>
     <addaction name="separator"/>
     <addaction name="actionClose"/>
     <addaction name="actionCloseAll"/>
@@ -132,6 +134,9 @@
     <addaction name="separator"/>
     <addaction name="menuRow_numbering_starts_with"/>
     <addaction name="actionShowHexInRow"/>
+    <addaction name="separator"/>
+    <addaction name="actionSaveTxtWithTbl"/>
+    <addaction name="actionHideKeyColumn"/>
    </widget>
    <widget class="QMenu" name="menuView">
     <property name="title">
@@ -177,6 +182,7 @@
    <addaction name="actionGoTo"/>
    <addaction name="separator"/>
    <addaction name="actionSyncScrolling"/>
+   <addaction name="actionHideKeyColumn"/>
   </widget>
   <widget class="QStatusBar" name="statusBar"/>
   <action name="actionNew">
@@ -349,9 +355,6 @@
    </property>
    <property name="statusTip">
     <string>Go to the specified row</string>
-   </property>
-   <property name="shortcut">
-    <string>Ctrl+G</string>
    </property>
   </action>
   <action name="actionClearSelected">
@@ -752,6 +755,36 @@
    </property>
    <property name="shortcut">
     <string notr="true">F4</string>
+   </property>
+  </action>
+  <action name="actionSendToServer">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Send to server...</string>
+   </property>
+  </action>
+  <action name="actionSaveTxtWithTbl">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Save .txt together with .tbl</string>
+   </property>
+   <property name="statusTip">
+    <string>When saving a .tbl, also save respective .txt automatically</string>
+   </property>
+  </action>
+  <action name="actionHideKeyColumn">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Hide the Key column</string>
+   </property>
+   <property name="iconText">
+    <string>Hide Key</string>
    </property>
   </action>
  </widget>
